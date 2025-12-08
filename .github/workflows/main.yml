@@ -12,29 +12,31 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write # Izin untuk bot melakukan push kembali file yang sudah diekstrak
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          # Penting: Perlu token agar bisa push kembali setelah ekstraksi
           token: ${{ secrets.GITHUB_TOKEN }} 
           
       - name: Set up JDK 17 with Gradle Environment
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
         env:
-          # Menonaktifkan Gradle Daemon untuk stabilitas
+          # Menonaktifkan Gradle Daemon untuk stabilitas (mengatasi error Groovy)
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
-          GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
+          GRADLE_USER_HOME: ${{ runner.temp }}/.gradle # Menggunakan home Gradle yang bersih
           
-      # ⭐ LANGKAH KUNCI: Pengecekan Keberadaan Proyek
+      # 1. Pengecekan dan Setup Proyek
       - name: Download, Unzip, and Setup Project if needed
         id: setup_check
         run: |
-          # Cek: Jika file 'gradlew' TIDAK ada, lakukan ekstraksi dari URL
+          # Hanya lanjutkan jika file 'gradlew' TIDAK ditemukan di repositori
           if [ ! -f gradlew ]; then
             echo "--- File 'gradlew' tidak ditemukan. Mengunduh dan mengekstrak proyek dari URL... ---"
             
@@ -70,11 +72,10 @@ jobs:
             
           else
             echo "--- File 'gradlew' ditemukan. Melewati langkah ekstraksi. ---"
-            # Set output untuk menandakan bahwa push tidak diperlukan
             echo "needs_push=false" >> $GITHUB_OUTPUT
           fi
           
-      # 3. Persiapan Build (Selalu dilakukan)
+      # 2. Persiapan Build
       
       - name: Grant Execute Permission to gradlew
         run: chmod +x gradlew
@@ -82,12 +83,12 @@ jobs:
       - name: Clean Project and Dependencies
         run: ./gradlew clean --refresh-dependencies
 
-      # 4. Proses Build (Selalu dilakukan)
+      # 3. Proses Build
       
       - name: Build Debug APK with Gradle
         run: ./gradlew assembleDebug
 
-      # 5. Upload Artifact (Selalu dilakukan)
+      # 4. Upload Artifact
       
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -95,89 +96,18 @@ jobs:
           name: floating-battery-app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           
-      # ⭐ LANGKAH KUNCI: Commit dan Push Perubahan (Hanya pada Build Pertama)
+      # 5. Commit dan Push Perubahan (Hanya pada Build Pertama)
       
       - name: Commit and Push Extracted Project Files
-        # Hanya jalankan jika output dari langkah 'setup_check' adalah true (yaitu, ekstraksi baru saja terjadi)
+        # Hanya jalankan jika output dari langkah 'setup_check' adalah true
         if: steps.setup_check.outputs.needs_push == 'true'
         run: |
           echo "Melakukan commit dan push file proyek yang sudah diekstrak..."
-          # Konfigurasi Git Identity
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Tambahkan semua file yang baru diekstrak dan pindah
           git add .
           
-          # Commit dengan pesan yang jelas
           git commit -m "CI Auto-Setup: Extracted project files from release URL."
-          
-          # Push commit ke branch yang sama
-          git push      # 2. Logic untuk Mengekstrak dan Membersihkan
-      - name: Conditional Unzip, Move Files, and Clean Up
-        id: unzip_check
-        run: |
-          ZIP_FILE="float.zip"
-          
-          if [ -f $ZIP_FILE ]; then
-            echo "--- File ZIP Ditemukan. Melakukan Ekstraksi dan Cleanup. ---"
-            unzip $ZIP_FILE -d extracted_project
-            
-            PROJECT_DIR=$(find extracted_project -name "gradlew" -exec dirname {} \;)
-            
-            if [ -n "$PROJECT_DIR" ]; then
-              echo "Project directory found: $PROJECT_DIR"
-              mv $PROJECT_DIR/* .
-              mv $PROJECT_DIR/.* . 2>/dev/null || true
-              rm -rf extracted_project
-            else
-              echo "Error: Could not find gradlew inside the zip structure. Stopping workflow."
-              exit 1
-            fi
-            
-            git rm $ZIP_FILE
-            
-            echo "needs_push=true" >> $GITHUB_OUTPUT
-            
-          else
-            echo "--- File ZIP tidak ditemukan. Langsung melanjutkan Build. ---"
-            echo "needs_push=false" >> $GITHUB_OUTPUT
-          fi
-          
-      # 3. Persiapan Build (Sekarang kita tidak perlu --no-daemon di sini karena sudah diatur di env)
-      
-      - name: Grant Execute Permission to gradlew
-        run: chmod +x gradlew
-        
-      - name: Clean Project and Dependencies
-        # Menggunakan --refresh-dependencies di sini untuk membersihkan cache dependencies juga
-        run: ./gradlew clean --refresh-dependencies
-
-      # 4. Proses Build
-      
-      - name: Build Debug APK with Gradle
-        # Cukup panggil tugasnya, karena GRADLE_OPTS sudah menonaktifkan daemon
-        run: ./gradlew assembleDebug
-
-      # 5. Upload Artifact
-      
-      - name: Upload Debug APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: floating-battery-app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          
-      # 6. Push Perubahan (Hanya jika Unzip dilakukan)
-      
-      - name: Commit and Push Cleaned Files
-        if: steps.unzip_check.outputs.needs_push == 'true'
-        run: |
-          echo "Melakukan commit dan push hasil ekstraksi..."
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          git add .
-          
-          git commit -m "CI Cleanup: Extracted project files and removed float.zip"
           
           git push
