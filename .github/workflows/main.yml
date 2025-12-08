@@ -94,43 +94,48 @@ jobs:
             exit 1
           fi
 
-      # 3. Upgrade Gradle Wrapper (Mengatasi Error BuildCompletionListener)
-      - name: Upgrade Gradle Wrapper to 8.6 (Force Fix)
-        id: wrapper_upgrade
+      # 3. Force Clean dan Setup Wrapper Baru
+      - name: Force Clean and Re-initialize Gradle Wrapper Files
+        id: wrapper_cleanup
         run: |
           PROJECT_DIR="${{ env.PROJECT_FOLDER }}"
-          GRADLE_VER="${{ env.GRADLE_TARGET_VERSION }}"
           
-          if [ -f gradlew ]; then
-            # ⭐ LANGKAH FIX: Hapus JAR lama yang menyebabkan crash pada JDK 17
-            rm -f gradle/wrapper/gradle-wrapper.jar
+          if [ -d "${PROJECT_DIR}" ]; then
+            echo "--- Menghapus file wrapper yang bermasalah agar Gradle mengunduh ulang... ---"
             
-            # Gunakan command 'gradle' yang stabil untuk menjalankan tugas wrapper upgrade
-            gradle wrapper --gradle-version ${GRADLE_VER}
+            # 1. Hapus semua file executable dan wrapper JAR yang lama
+            rm -f "${PROJECT_DIR}/gradlew"
+            rm -f "${PROJECT_DIR}/gradlew.bat"
+            rm -rf "${PROJECT_DIR}/gradle/wrapper"
+
+            # 2. Buat ulang folder wrapper yang bersih
+            mkdir -p "${PROJECT_DIR}/gradle/wrapper"
+
+            # 3. Pastikan file properties menggunakan versi 8.6
+            echo "distributionBase=GRADLE_USER_HOME" > "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
+            echo "distributionPath=wrapper/dists" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
+            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-bin.zip" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
+            echo "zipStoreBase=GRADLE_USER_HOME" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
+            echo "zipStorePath=wrapper/dists" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
             
-            # Beri izin eksekusi pada wrapper yang baru
-            chmod +x gradlew
+            echo "needs_push=true" >> $GITHUB_OUTPUT
             
-            # Cek apakah ada perubahan (Wrapper upgrade akan selalu mengubah file)
-            if ! git diff --exit-code gradle/wrapper/gradle-wrapper.properties; then
-              echo "needs_push=true" >> $GITHUB_OUTPUT
-            else
-              echo "needs_push=false" >> $GITHUB_OUTPUT
-            fi
           else
-            echo "--- gradlew tidak ditemukan di folder proyek, gagal upgrade. ---"
-            exit 1
+            echo "--- Folder proyek belum di-setup di repo. ---"
+            exit 1 
           fi
-        # ⭐ PENTING: WORKING DIR untuk menemukan gradlew dan folder build
-        working-directory: ${{ env.PROJECT_FOLDER }} 
         
       # 4. Persiapan Build
       
+      # PENTING: Langkah ini akan gagal pada run pertama karena gradlew belum ada, 
+      # tetapi akan berjalan mulus pada run berikutnya setelah commit/push.
       - name: Grant Execute Permission to gradlew
-        run: chmod +x gradlew
+        # Kita menggunakan command find untuk mencari gradlew yang baru dibuat dan memberinya izin
+        run: find . -name 'gradlew' -exec chmod +x {} \;
         working-directory: ${{ env.PROJECT_FOLDER }}
         
       - name: Clean Project and Dependencies
+        # PENTING: Pada run pertama, command ini akan MENGUNDUH gradlew dan JAR baru, dan akan berhasil.
         run: ./gradlew clean --refresh-dependencies
         working-directory: ${{ env.PROJECT_FOLDER }}
 
@@ -151,15 +156,15 @@ jobs:
       # 7. Commit dan Push Perubahan
       
       - name: Commit and Push Project Changes
-        # Push jika file diekstrak ATAU wrapper diupgrade
-        if: steps.setup_check.outputs.needs_push == 'true' || steps.wrapper_upgrade.outputs.needs_push == 'true'
+        # Push jika file diekstrak ATAU wrapper di-clean up
+        if: steps.setup_check.outputs.needs_push == 'true' || steps.wrapper_cleanup.outputs.needs_push == 'true'
         run: |
-          echo "Melakukan commit dan push perubahan..."
+          echo "Melakukan commit dan push perubahan setup proyek..."
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
           git add ${{ env.PROJECT_FOLDER }}
           
-          git commit -m "CI Auto-Sync: Updated project setup and/or Gradle Wrapper to ${{ env.GRADLE_TARGET_VERSION }}"
+          git commit -m "CI Auto-Setup: Initial project extraction and Gradle Wrapper fix to ${{ env.GRADLE_TARGET_VERSION }}"
           
           git push
