@@ -136,13 +136,13 @@ jobs:
         
       - name: Clean Project and Dependencies
         # PENTING: Pada run pertama, command ini akan MENGUNDUH gradlew dan JAR baru, dan akan berhasil.
-        run: ./gradlew clean --refresh-dependencies
+        run: gradle clean --refresh-dependencies
         working-directory: ${{ env.PROJECT_FOLDER }}
 
       # 5. Proses Build
       
       - name: Build Debug APK with Gradle
-        run: ./gradlew assembleDebug -Dorg.gradle.parallel=true
+        run: gradle assembleDebug -Dorg.gradle.parallel=true
         working-directory: ${{ env.PROJECT_FOLDER }}
 
       # 6. Upload Artifact
