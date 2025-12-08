@@ -24,7 +24,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '11'
         env:
           # Menonaktifkan Gradle Daemon untuk stabilitas
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
