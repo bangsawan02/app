@@ -47,14 +47,13 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
           GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
           
-      # 2. Pengecekan Cerdas dan Setup Proyek
+      # 2. Pengecekan Cerdas dan Setup Proyek (Download jika folder 'float' belum ada)
       - name: Download, Unzip, and Setup Project if needed
         id: setup_check
         shell: bash
         run: |
           PROJECT_FOLDER="${{ env.PROJECT_FOLDER }}" 
           
-          # Cek: Jika gradlew sudah ada di folder target, lewati download.
           if [ -f "${PROJECT_FOLDER}/gradlew" ]; then
             echo "--- File 'gradlew' ditemukan di ${PROJECT_FOLDER}. Melewati langkah ekstraksi. ---"
             echo "needs_push=false" >> $GITHUB_OUTPUT
@@ -71,7 +70,6 @@ jobs:
           
           if [ -f $ZIP_FILE ]; then
             
-            # Buat folder sementara untuk ekstraksi dan folder target
             mkdir -p "${PROJECT_FOLDER}"
             mkdir -p extracted_temp
             unzip $ZIP_FILE -d extracted_temp
@@ -96,33 +94,37 @@ jobs:
             exit 1
           fi
 
-      # 3. Upgrade Gradle Wrapper
-      - name: Upgrade Gradle Wrapper to 8.6
+      # 3. Upgrade Gradle Wrapper (Mengatasi Error BuildCompletionListener)
+      - name: Upgrade Gradle Wrapper to 8.6 (Force Fix)
         id: wrapper_upgrade
-        # Jalankan selalu setelah setup/ekstraksi
         run: |
-          # Command ini dijalankan dari working-directory: float
+          PROJECT_DIR="${{ env.PROJECT_FOLDER }}"
           GRADLE_VER="${{ env.GRADLE_TARGET_VERSION }}"
           
-          if [ -f gradlew ]; then # Cek jika gradlew ada di folder saat ini (yaitu 'float')
-            chmod +x gradlew
-            ./gradlew wrapper --gradle-version ${GRADLE_VER} --no-daemon
+          if [ -f gradlew ]; then
+            # ⭐ LANGKAH FIX: Hapus JAR lama yang menyebabkan crash pada JDK 17
+            rm -f gradle/wrapper/gradle-wrapper.jar
             
+            # Gunakan command 'gradle' yang stabil untuk menjalankan tugas wrapper upgrade
+            gradle wrapper --gradle-version ${GRADLE_VER}
+            
+            # Beri izin eksekusi pada wrapper yang baru
+            chmod +x gradlew
+            
+            # Cek apakah ada perubahan (Wrapper upgrade akan selalu mengubah file)
             if ! git diff --exit-code gradle/wrapper/gradle-wrapper.properties; then
               echo "needs_push=true" >> $GITHUB_OUTPUT
-              echo "--- Wrapper berhasil di-upgrade! Perlu push. ---"
             else
               echo "needs_push=false" >> $GITHUB_OUTPUT
-              echo "--- Wrapper sudah versi terbaru. Tidak ada perubahan. ---"
             fi
           else
             echo "--- gradlew tidak ditemukan di folder proyek, gagal upgrade. ---"
             exit 1
           fi
-        # ⭐ FIX: WORKING DIR DIBUTUHKAN DI SINI UNTUK MENEMUKAN gradlew
+        # ⭐ PENTING: WORKING DIR untuk menemukan gradlew dan folder build
         working-directory: ${{ env.PROJECT_FOLDER }} 
         
-      # 4. Persiapan Build (Semua langkah ini sudah menggunakan working-directory)
+      # 4. Persiapan Build
       
       - name: Grant Execute Permission to gradlew
         run: chmod +x gradlew
@@ -149,7 +151,7 @@ jobs:
       # 7. Commit dan Push Perubahan
       
       - name: Commit and Push Project Changes
-        # Menggabungkan push untuk file yang diekstrak (build pertama) dan wrapper yang diupgrade
+        # Push jika file diekstrak ATAU wrapper diupgrade
         if: steps.setup_check.outputs.needs_push == 'true' || steps.wrapper_upgrade.outputs.needs_push == 'true'
         run: |
           echo "Melakukan commit dan push perubahan..."
