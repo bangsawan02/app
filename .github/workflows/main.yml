@@ -17,16 +17,24 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          # Perlu checkout dengan token agar bisa push kembali
           token: ${{ secrets.GITHUB_TOKEN }} 
           
-      - name: Set up JDK 17
+      # 1. Setup JDK dengan pengaturan environment Gradle
+      - name: Set up JDK 17 with Gradle Environment
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       
-      # 1. Logic untuk Mengekstrak dan Membersihkan
+        # Tambahkan variabel lingkungan untuk memaksa non-daemon dan memperbaiki cache
+        env:
+          # Menonaktifkan Gradle Daemon secara default (untuk semua panggilan gradlew)
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+          # Menghapus lokasi cache Groovy (sering menjadi sumber masalah NoClassDefFoundError)
+          # Mengatur lokasi cache Gradle di luar default yang mungkin bermasalah.
+          GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
+          
+      # 2. Logic untuk Mengekstrak dan Membersihkan
       - name: Conditional Unzip, Move Files, and Clean Up
         id: unzip_check
         run: |
@@ -34,52 +42,45 @@ jobs:
           
           if [ -f $ZIP_FILE ]; then
             echo "--- File ZIP Ditemukan. Melakukan Ekstraksi dan Cleanup. ---"
-            
-            # Ekstrak file ke subfolder sementara
             unzip $ZIP_FILE -d extracted_project
             
-            # Cari folder yang berisi 'gradlew'
             PROJECT_DIR=$(find extracted_project -name "gradlew" -exec dirname {} \;)
             
             if [ -n "$PROJECT_DIR" ]; then
               echo "Project directory found: $PROJECT_DIR"
-              # Pindahkan semua isi folder project ke root direktori kerja
               mv $PROJECT_DIR/* .
-              mv $PROJECT_DIR/.* . 2>/dev/null || true # Pindahkan file tersembunyi
-              rm -rf extracted_project # Hapus folder sementara
+              mv $PROJECT_DIR/.* . 2>/dev/null || true
+              rm -rf extracted_project
             else
               echo "Error: Could not find gradlew inside the zip structure. Stopping workflow."
               exit 1
             fi
             
-            # Hapus file ZIP dari index Git
             git rm $ZIP_FILE
             
-            # Set output untuk menandakan bahwa perubahan sudah terjadi (perlu push)
             echo "needs_push=true" >> $GITHUB_OUTPUT
             
           else
             echo "--- File ZIP tidak ditemukan. Langsung melanjutkan Build. ---"
-            # Set output untuk menandakan tidak ada perubahan yang perlu dipush
             echo "needs_push=false" >> $GITHUB_OUTPUT
           fi
           
-      # 2. Persiapan Build
+      # 3. Persiapan Build (Sekarang kita tidak perlu --no-daemon di sini karena sudah diatur di env)
       
       - name: Grant Execute Permission to gradlew
-        # Perintah ini dijalankan pada gradlew yang ada (baik dari checkout awal atau setelah move)
         run: chmod +x gradlew
         
-      - name: Clean Project and Cache
-        run: ./gradlew clean --no-daemon
+      - name: Clean Project and Dependencies
+        # Menggunakan --refresh-dependencies di sini untuk membersihkan cache dependencies juga
+        run: ./gradlew clean --refresh-dependencies
 
-      # 3. Proses Build
+      # 4. Proses Build
       
-      - name: Build Debug APK with Gradle (No Daemon)
-        # Menggunakan flag --no-daemon untuk menghindari masalah cache/Groovy
-        run: ./gradlew assembleDebug --no-daemon --refresh-dependencies
+      - name: Build Debug APK with Gradle
+        # Cukup panggil tugasnya, karena GRADLE_OPTS sudah menonaktifkan daemon
+        run: ./gradlew assembleDebug
 
-      # 4. Upload Artifact
+      # 5. Upload Artifact
       
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -87,22 +88,17 @@ jobs:
           name: floating-battery-app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           
-      # 5. Push Perubahan (Hanya jika Unzip dilakukan)
+      # 6. Push Perubahan (Hanya jika Unzip dilakukan)
       
       - name: Commit and Push Cleaned Files
-        # Hanya jalankan langkah ini jika output dari langkah 'unzip_check' adalah true
         if: steps.unzip_check.outputs.needs_push == 'true'
         run: |
           echo "Melakukan commit dan push hasil ekstraksi..."
-          # Konfigurasi Git Identity
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Tambahkan semua file yang baru diekstrak dan pindah (sekarang di root)
           git add .
           
-          # Commit dengan pesan yang jelas
           git commit -m "CI Cleanup: Extracted project files and removed float.zip"
           
-          # Push commit ke branch yang sama
           git push
