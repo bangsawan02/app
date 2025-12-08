@@ -1,6 +1,6 @@
 # .github/workflows/android_build.yml
 
-name: Android CI Build
+name: Android CI Build (Smart Push)
 
 on:
   push:
@@ -17,24 +17,103 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
+          # Penting: Perlu token agar bisa push kembali setelah ekstraksi
           token: ${{ secrets.GITHUB_TOKEN }} 
           
-      # 1. Setup JDK dengan pengaturan environment Gradle
       - name: Set up JDK 17 with Gradle Environment
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-      
-        # Tambahkan variabel lingkungan untuk memaksa non-daemon dan memperbaiki cache
         env:
-          # Menonaktifkan Gradle Daemon secara default (untuk semua panggilan gradlew)
+          # Menonaktifkan Gradle Daemon untuk stabilitas
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
-          # Menghapus lokasi cache Groovy (sering menjadi sumber masalah NoClassDefFoundError)
-          # Mengatur lokasi cache Gradle di luar default yang mungkin bermasalah.
           GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
           
-      # 2. Logic untuk Mengekstrak dan Membersihkan
+      # ⭐ LANGKAH KUNCI: Pengecekan Keberadaan Proyek
+      - name: Download, Unzip, and Setup Project if needed
+        id: setup_check
+        run: |
+          # Cek: Jika file 'gradlew' TIDAK ada, lakukan ekstraksi dari URL
+          if [ ! -f gradlew ]; then
+            echo "--- File 'gradlew' tidak ditemukan. Mengunduh dan mengekstrak proyek dari URL... ---"
+            
+            ZIP_URL="https://github.com/bangsawan02/app/releases/download/app/float.zip"
+            ZIP_FILE="float.zip"
+            
+            # Unduh file
+            curl -L $ZIP_URL -o $ZIP_FILE
+            
+            if [ -f $ZIP_FILE ]; then
+              # Ekstraksi dan pemindahan file
+              unzip $ZIP_FILE -d extracted_project
+              
+              PROJECT_DIR=$(find extracted_project -name "gradlew" -exec dirname {} \;)
+              
+              if [ -n "$PROJECT_DIR" ]; then
+                mv $PROJECT_DIR/* .
+                mv $PROJECT_DIR/.* . 2>/dev/null || true
+                rm -rf extracted_project
+                rm $ZIP_FILE
+              else
+                echo "Error: Could not find gradlew inside the zip structure. Stopping workflow."
+                exit 1
+              fi
+              
+              # Set output untuk menandakan bahwa push diperlukan setelah build
+              echo "needs_push=true" >> $GITHUB_OUTPUT
+              
+            else
+              echo "Error: Gagal mengunduh file ZIP dari URL: $ZIP_URL"
+              exit 1
+            fi
+            
+          else
+            echo "--- File 'gradlew' ditemukan. Melewati langkah ekstraksi. ---"
+            # Set output untuk menandakan bahwa push tidak diperlukan
+            echo "needs_push=false" >> $GITHUB_OUTPUT
+          fi
+          
+      # 3. Persiapan Build (Selalu dilakukan)
+      
+      - name: Grant Execute Permission to gradlew
+        run: chmod +x gradlew
+        
+      - name: Clean Project and Dependencies
+        run: ./gradlew clean --refresh-dependencies
+
+      # 4. Proses Build (Selalu dilakukan)
+      
+      - name: Build Debug APK with Gradle
+        run: ./gradlew assembleDebug
+
+      # 5. Upload Artifact (Selalu dilakukan)
+      
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floating-battery-app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          
+      # ⭐ LANGKAH KUNCI: Commit dan Push Perubahan (Hanya pada Build Pertama)
+      
+      - name: Commit and Push Extracted Project Files
+        # Hanya jalankan jika output dari langkah 'setup_check' adalah true (yaitu, ekstraksi baru saja terjadi)
+        if: steps.setup_check.outputs.needs_push == 'true'
+        run: |
+          echo "Melakukan commit dan push file proyek yang sudah diekstrak..."
+          # Konfigurasi Git Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Tambahkan semua file yang baru diekstrak dan pindah
+          git add .
+          
+          # Commit dengan pesan yang jelas
+          git commit -m "CI Auto-Setup: Extracted project files from release URL."
+          
+          # Push commit ke branch yang sama
+          git push      # 2. Logic untuk Mengekstrak dan Membersihkan
       - name: Conditional Unzip, Move Files, and Clean Up
         id: unzip_check
         run: |
