@@ -1,6 +1,6 @@
 # .github/workflows/android_build.yml
 
-name: Android CI Build (Subfolder Project)
+name: Android CI Build (Smart Push & Fast Cache)
 
 on:
   push:
@@ -13,10 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # Definisikan nama subfolder project di sini
-    env:
-      PROJECT_FOLDER: float # Nama folder yang akan dibuat (dari 'float.zip')
-    
     permissions:
       contents: write 
 
@@ -26,6 +22,18 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }} 
           
+      # ⭐ LANGKAH BARU: Cache Gradle Dependencies
+      - name: Cache Gradle Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          # Key akan berubah jika ada perubahan pada build.gradle atau wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Set up JDK 17 with Gradle Environment
         uses: actions/setup-java@v4
         with:
@@ -39,7 +47,6 @@ jobs:
       - name: Download and Unzip Project if needed
         id: setup_check
         run: |
-          # Cek: Jika file 'gradlew' TIDAK ada di dalam folder TARGET, lakukan ekstraksi
           if [ ! -f ${PROJECT_FOLDER}/gradlew ]; then
             echo "--- Project folder tidak ditemukan. Mengunduh dan mengekstrak proyek dari URL... ---"
             
@@ -49,27 +56,19 @@ jobs:
             curl -L $ZIP_URL -o $ZIP_FILE
             
             if [ -f $ZIP_FILE ]; then
-              # ⭐ LOGIKA BARU UNTUK EKSTRAKSI KE SUBFOLDER
-              
-              # 1. Buat folder target (misalnya 'float')
+              # ... (Logika Ekstraksi) ...
               mkdir ${PROJECT_FOLDER}
-
-              # 2. Ekstrak isinya ke folder target
               unzip $ZIP_FILE -d ${PROJECT_FOLDER}
               
-              # 3. Masalah umum: ZIP seringkali memiliki folder induk (misal: 'float_project/')
-              # Kita perlu memindahkan isi folder induk tersebut ke root 'float' yang baru dibuat.
               PROJECT_SUBDIR=$(find ${PROJECT_FOLDER} -mindepth 1 -maxdepth 1 -type d | head -n 1)
               
               if [ -n "$PROJECT_SUBDIR" ]; then
-                  echo "Found unnecessary subdirectory: $PROJECT_SUBDIR. Moving contents up."
                   mv ${PROJECT_SUBDIR}/* ${PROJECT_FOLDER}/
                   mv ${PROJECT_SUBDIR}/.* ${PROJECT_FOLDER}/ 2>/dev/null || true
                   rmdir ${PROJECT_SUBDIR} 2>/dev/null || true
               fi
 
-              rm $ZIP_FILE # Hapus file ZIP
-              
+              rm $ZIP_FILE 
               echo "needs_push=true" >> $GITHUB_OUTPUT
               
             else
@@ -84,7 +83,6 @@ jobs:
           
       # 2. Persiapan Build
       
-      # ⭐ PENTING: Gunakan 'working-directory: ${{ env.PROJECT_FOLDER }}'
       - name: Grant Execute Permission to gradlew
         run: chmod +x gradlew
         working-directory: ${{ env.PROJECT_FOLDER }}
@@ -95,8 +93,9 @@ jobs:
 
       # 3. Proses Build
       
-      - name: Build Debug APK with Gradle
-        run: ./gradlew assembleDebug
+      - name: Build Debug APK with Gradle (Parallel)
+        # Menggunakan parallel untuk memanfaatkan core CPU di runner
+        run: ./gradlew assembleDebug -Dorg.gradle.parallel=true
         working-directory: ${{ env.PROJECT_FOLDER }}
 
       # 4. Upload Artifact
@@ -105,7 +104,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: floating-battery-app-debug
-          # ⭐ PATH DISESUAIKAN: app/build berada di dalam folder proyek
           path: ${{ env.PROJECT_FOLDER }}/app/build/outputs/apk/debug/app-debug.apk
           
       # 5. Commit dan Push Perubahan (Hanya pada Build Pertama)
@@ -113,11 +111,9 @@ jobs:
       - name: Commit and Push Extracted Project Files
         if: steps.setup_check.outputs.needs_push == 'true'
         run: |
-          echo "Melakukan commit dan push folder proyek..."
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Tambahkan folder baru (misalnya 'float/')
           git add ${{ env.PROJECT_FOLDER }}
           
           git commit -m "CI Auto-Setup: Extracted project folder to ${{ env.PROJECT_FOLDER }}/."
