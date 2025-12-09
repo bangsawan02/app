@@ -1,170 +1,91 @@
-# .github/workflows/android_build.yml
+# .github/workflows/setup-gui-runner.yml
 
-name: Android CI Build (Versi Stabil dan Cepat)
+name: setup KDE Plasma + Tailscale + VNC/NoVNC
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  setup-gui-runner:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: write 
-    
-    # Variabel Lingkungan
     env:
-      PROJECT_FOLDER: float # Folder proyek sebenarnya
-      GRADLE_TARGET_VERSION: 8.6
+      TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }}
+      USERNAME: runner
+      PASSWORD: runner
+      TAILSCALE_HOSTNAME: gh-plasma-${{ github.run_id }}
+      VNC_DISPLAY: ':1' # Display VNC yang akan digunakan
+      VNC_PORT: 5901   # Port VNC standar (5900 + VNC_DISPLAY)
+      NOVNC_PORT: 6080 # Port default NoVNC
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }} 
-          
-      # 1. Cache Gradle Dependencies
-      - name: Cache Gradle Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17 with Gradle Environment
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-        env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
-          GRADLE_USER_HOME: ${{ runner.temp }}/.gradle
-          
-      # 2. Pengecekan Cerdas dan Setup Proyek (Download jika folder 'float' belum ada)
-      - name: Download, Unzip, and Setup Project if needed
-        id: setup_check
-        shell: bash
+      - name: Setup User Password
         run: |
-          PROJECT_FOLDER="${{ env.PROJECT_FOLDER }}" 
+          # Buat sandi untuk pengguna runner
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+          echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
           
-          if [ -f "${PROJECT_FOLDER}/gradlew" ]; then
-            echo "--- File 'gradlew' ditemukan di ${PROJECT_FOLDER}. Melewati langkah ekstraksi. ---"
-            echo "needs_push=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Jika sampai di sini, maka gradlew TIDAK ditemukan, Lanjutkan Download
-          echo "--- Project folder tidak ditemukan. Mengunduh dan mengekstrak proyek dari URL... ---"
-          
-          ZIP_URL="https://github.com/bangsawan02/app/releases/download/app/float.zip"
-          ZIP_FILE="float.zip"
-          
-          curl -L $ZIP_URL -o $ZIP_FILE
-          
-          if [ -f $ZIP_FILE ]; then
-            
-            mkdir -p "${PROJECT_FOLDER}"
-            mkdir -p extracted_temp
-            unzip $ZIP_FILE -d extracted_temp
-            
-            PROJECT_ROOT=$(find extracted_temp -name "gradlew" -exec dirname {} \;)
-            
-            if [ -n "$PROJECT_ROOT" ]; then
-              mv ${PROJECT_ROOT}/* "${PROJECT_FOLDER}/"
-              mv ${PROJECT_ROOT}/.* "${PROJECT_FOLDER}/" 2>/dev/null || true
-              
-              rm -rf extracted_temp 
-              rm $ZIP_FILE 
-            else
-              echo "Error: Could not find gradlew inside the zip structure."
-              exit 1
-            fi
-            
-            echo "needs_push=true" >> $GITHUB_OUTPUT
-            
-          else
-            echo "Error: Gagal mengunduh file ZIP dari URL: $ZIP_URL"
-            exit 1
-          fi
-
-      # 3. Force Clean dan Setup Wrapper Baru
-      - name: Force Clean and Re-initialize Gradle Wrapper Files
-        id: wrapper_cleanup
+      - name: Install KDE Plasma, VNC Server, dan NoVNC
         run: |
-          PROJECT_DIR="${{ env.PROJECT_FOLDER }}"
+          echo ">>> Installing Desktop & VNC components..."
+          sudo apt-get update -qq
+          # tightvncserver untuk server VNC, fluxbox atau xterm untuk lingkungan dasar
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tightvncserver kde-plasma-desktop xterm websockify net-tools
           
-          if [ -d "${PROJECT_DIR}" ]; then
-            echo "--- Menghapus file wrapper yang bermasalah agar Gradle mengunduh ulang... ---"
-            
-            # 1. Hapus semua file executable dan wrapper JAR yang lama
-            rm -f "${PROJECT_DIR}/gradlew"
-            rm -f "${PROJECT_DIR}/gradlew.bat"
-            rm -rf "${PROJECT_DIR}/gradle/wrapper"
-
-            # 2. Buat ulang folder wrapper yang bersih
-            mkdir -p "${PROJECT_DIR}/gradle/wrapper"
-
-            # 3. Pastikan file properties menggunakan versi 8.6
-            echo "distributionBase=GRADLE_USER_HOME" > "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
-            echo "distributionPath=wrapper/dists" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
-            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-bin.zip" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
-            echo "zipStoreBase=GRADLE_USER_HOME" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
-            echo "zipStorePath=wrapper/dists" >> "${PROJECT_DIR}/gradle/wrapper/gradle-wrapper.properties"
-            
-            echo "needs_push=true" >> $GITHUB_OUTPUT
-            
-          else
-            echo "--- Folder proyek belum di-setup di repo. ---"
-            exit 1 
-          fi
-        
-      # 4. Persiapan Build
-      
-      # PENTING: Langkah ini akan gagal pada run pertama karena gradlew belum ada, 
-      # tetapi akan berjalan mulus pada run berikutnya setelah commit/push.
-      - name: Grant Execute Permission to gradlew
-        # Kita menggunakan command find untuk mencari gradlew yang baru dibuat dan memberinya izin
-        run: find . -name 'gradlew' -exec chmod +x {} \;
-        working-directory: ${{ env.PROJECT_FOLDER }}
-        
-      - name: Clean Project and Dependencies
-        # PENTING: Pada run pertama, command ini akan MENGUNDUH gradlew dan JAR baru, dan akan berhasil.
-        run: gradle clean --refresh-dependencies
-        working-directory: ${{ env.PROJECT_FOLDER }}
-
-      # 5. Proses Build
-      
-      - name: Build Debug APK with Gradle
-        run: gradle assembleDebug -Dorg.gradle.parallel=true
-        working-directory: ${{ env.PROJECT_FOLDER }}
-
-      # 6. Upload Artifact
-      
-      - name: Upload Debug APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: floating-battery-app-debug
-          path: ${{ env.PROJECT_FOLDER }}/app/build/outputs/apk/debug/app-debug.apk
+          # Unduh dan Instal NoVNC (menggunakan websockify yang sudah diinstal)
+          mkdir -p /home/${USERNAME}/novnc
+          cd /home/${USERNAME}/novnc
+          wget https://github.com/novnc/noVNC/archive/refs/tags/v1.3.0.tar.gz
+          tar -xzvf v1.3.0.tar.gz
+          mv noVNC-1.3.0 www
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/novnc
           
-      # 7. Commit dan Push Perubahan
-      
-      - name: Commit and Push Project Changes
-        # Push jika file diekstrak ATAU wrapper di-clean up
-        if: steps.setup_check.outputs.needs_push == 'true' || steps.wrapper_cleanup.outputs.needs_push == 'true'
+      - name: Configure and Start VNC Server
         run: |
-          echo "Melakukan commit dan push perubahan setup proyek..."
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Pindah ke home directory runner
+          cd /home/${USERNAME}
+
+          # Inisialisasi tightvncserver (membuat file sandi VNC, gunakan sandi yang sama)
+          echo "${PASSWORD}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
           
-          git add ${{ env.PROJECT_FOLDER }}
+          # Konfigurasi VNC untuk memulai KDE Plasma saat diakses
+          mkdir -p ~/.vnc
+          echo '#!/bin/sh' > ~/.vnc/xstartup
+          echo 'xrdb $HOME/.Xresources' >> ~/.vnc/xstartup
+          echo 'startkde' >> ~/.vnc/xstartup # Panggil KDE Plasma
+          chmod +x ~/.vnc/xstartup
           
-          git commit -m "CI Auto-Setup: Initial project extraction and Gradle Wrapper fix to ${{ env.GRADLE_TARGET_VERSION }}"
+          # Start VNC Server di background
+          vncserver ${VNC_DISPLAY} -geometry 1280x800 -depth 24
           
-          git push
+      - name: Install Tailscale dan Dapatkan IP
+        run: |
+          echo ">>> Installing Tailscale..."
+          curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
+          
+          # Simpan IP Tailscale sebagai output
+          TAILSCALE_IP=$(sudo tailscale ip -4 | head -n 1)
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
+          
+      - name: Start NoVNC and Keep Alive
+        run: |
+          echo "=== FINAL CONNECTION INFO ==="
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo "NoVNC URL: http://${{ env.TAILSCALE_IP }}:${NOVNC_PORT}/vnc.html?host=${{ env.TAILSCALE_IP }}&port=${NOVNC_PORT}"
+          echo "VNC Password: ${PASSWORD}"
+          echo "WARNING: This runner will automatically terminate after ~6 hours."
+
+          # Start NoVNC Web Server di background, meneruskan koneksi dari 6080 ke VNC 5901
+          cd /home/${USERNAME}/novnc/www
+          /usr/bin/websockify ${NOVNC_PORT} localhost:${VNC_PORT} > /dev/null 2>&1 &
+
+          echo ">>> Keeping runner alive. Connect now via Android browser or WebView."
+          # Tahan runner selama hampir 6 jam
+          sleep 21600 || true
