@@ -1,99 +1,99 @@
-# .github/workflows/setup-gui-runner.yml
-
-name: setup KDE Plasma + Tailscale + VNC/NoVNC
+name: 🖥️ Persistent Remote Desktop (VNC/Tailscale)
 
 on:
+  # Memungkinkan dijalankan secara manual dari UI GitHub
   workflow_dispatch:
-
-permissions:
-  contents: read
-
+  # Anda dapat menambahkan 'push' atau 'schedule' di sini jika diperlukan
+  
 jobs:
-  setup-gui-runner:
+  remote-desktop-persistence:
+    # Menggunakan runner Ubuntu
     runs-on: ubuntu-latest
-    env:
-      TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }} # Harus disetel sebagai GitHub Variable/Secret
-      USERNAME: runner
-      PASSWORD: runner
-      VNC_DISPLAY: ':1' 
-      VNC_PORT: 5901   
-      NOVNC_PORT: 6080 
+    
+    # Memberikan izin untuk menulis file (untuk caching)
+    permissions:
+      contents: read
       
-      # Gunakan Run ID di hostname agar unik
-      TAILSCALE_HOSTNAME: gh-plasma-${{ github.run_id }} 
-
     steps:
-      - uses: actions/checkout@v4
+    
+    # 1. Checkout Kode
+    - name: ⬇️ Checkout Repository
+      uses: actions/checkout@v4
+      
+    # 2. RESTORE DOCKER VOLUME CACHE
+    - name: ♻️ Restore Docker Volume Cache
+      id: cache-restore
+      uses: actions/cache@v4
+      with:
+        # Menargetkan lokasi default volume Docker di Linux runner
+        path: /var/lib/docker/volumes/
+        
+        # Kunci cache: OS + Versi Skema (v1) + Hash Dockerfile
+        key: ${{ runner.os }}-docker-volume-v1-${{ hashFiles('Dockerfile') }}
+        restore-keys: |
+          ${{ runner.os }}-docker-volume-v1-
+          ${{ runner.os }}-docker-volume-
 
-      - name: Setup User Password
-        run: |
-          # Buat pengguna runner jika belum ada dan setel sandi
-          sudo useradd -m -s /bin/bash ${USERNAME} || echo "User ${USERNAME} already exists."
-          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
-          echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
-          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
-          
-      - name: Install Desktop, VNC Server, dan NoVNC
-        run: |
-          echo ">>> Installing Desktop & VNC components..."
-          sudo apt-get update -qq
-          # Instal KDE, VNC Server, dan utilitas pendukung
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop tightvncserver xterm websockify net-tools 
-          
-          # Unduh dan Instal NoVNC
-          mkdir -p /home/${USERNAME}/novnc
-          cd /home/${USERNAME}/novnc
-          # Menggunakan versi stabil
-          wget https://github.com/novnc/noVNC/archive/refs/tags/v1.3.0.tar.gz
-          tar -xzvf v1.3.0.tar.gz > /dev/null
-          mv noVNC-1.3.0 www
-          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/novnc
-          
-      - name: Configure and Start VNC Server
-        run: |
-          # Switch ke user runner untuk konfigurasi VNC
-          sudo -H -u ${USERNAME} bash -c "
-            # Setel sandi VNC
-            echo \"${PASSWORD}\" | vncpasswd -f > /home/${USERNAME}/.vnc/passwd
-            chmod 600 /home/${USERNAME}/.vnc/passwd
-            
-            # Konfigurasi xstartup untuk memulai KDE
-            mkdir -p /home/${USERNAME}/.vnc
-            echo '#!/bin/sh' > /home/${USERNAME}/.vnc/xstartup
-            echo 'xrdb /home/${USERNAME}/.Xresources' >> /home/${USERNAME}/.vnc/xstartup
-            echo 'startkde' >> /home/${USERNAME}/.vnc/xstartup
-            chmod +x /home/${USERNAME}/.vnc/xstartup
-            
-            # Start VNC Server di background
-            vncserver ${VNC_DISPLAY} -geometry 1280x800 -depth 24
-          "
-          
-      - name: Install Tailscale dan Dapatkan IP
-        id: tailscale_setup
-        run: |
-          echo ">>> Installing Tailscale..."
-          curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
-          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
+    # 3. BUILD DAN RUN CONTAINER (VNC + Tailscale + noVNC)
+    - name: 🐳 Build and Run VNC/Tailscale Container
+      id: run-container
+      run: |
+        # Nama Volume Docker yang akan menyimpan semua data Xfce/Firefox
+        VOLUME_NAME="xfce_vnc_data"
+        
+        # 1. Build Docker Image 
+        docker build -t xfce-vnc-image .
+        
+        # 2. Jalankan Container. 
+        # - Memetakan Volume: -v $VOLUME_NAME:/home/developer
+        # - Memberikan Auth Key Tailscale sebagai Environment Variable
+        docker run -d \
+          --name vnc-runner \
+          -v $VOLUME_NAME:/home/developer \
+          -e TAILSCALE_AUTH_KEY=${{ vars.AUTHKEY }} \
+          xfce-vnc-image 
 
-          # Dapatkan IP Tailscale dan setel sebagai variabel lingkungan
-          TAILSCALE_IP=$(sudo tailscale ip -4 | head -n 1)
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
-          
-          # Baris KRUSIAL untuk diekstrak oleh aplikasi Android (Marker)
-          echo "TAILSCALE_IP_OUTPUT::${TAILSCALE_IP}" 
-          
-      - name: Start NoVNC Web Server dan Keep Alive
-        run: |
-          echo "=== FINAL CONNECTION INFO ==="
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
-          echo "NoVNC URL: http://${{ env.TAILSCALE_IP }}:${NOVNC_PORT}/vnc.html"
-          echo "VNC Password: ${PASSWORD}"
+        echo "Container berjalan, menunggu Tailscale koneksi..."
+        # Memberikan waktu agar Tailscale melakukan koneksi dan otorisasi
+        sleep 20
+        
+        # 3. Ambil Tailscale IP dari log container (Pastikan entrypoint.sh sukses)
+        TAILSCALE_IP=$(docker exec vnc-runner tailscale ip -4)
+        NOVNC_PORT=6080 # Port yang terekspos di Dockerfile
 
-          # Start NoVNC Web Server di background, meneruskan koneksi dari 6080 ke VNC 5901
-          sudo -H -u ${USERNAME} bash -c "
-             /usr/bin/websockify ${NOVNC_PORT} localhost:${VNC_PORT} > /home/${USERNAME}/novnc.log 2>&1 &
-          "
-          
-          echo ">>> Runner aktif selama 6 jam. Connect now via Android WebView."
-          # Tahan runner selama 6 jam (batas maksimal GitHub)
-          sleep 21600 || true
+        # Output sebagai notifikasi dan sebagai output job
+        echo "::notice file=README.md,line=1::Akses Desktop (dari Tailnet Anda) di: http://$TAILSCALE_IP:$NOVNC_PORT/vnc.html"
+        
+        # Menyimpan IP sebagai output langkah, berguna untuk langkah berikutnya jika ada
+        echo "tailscale_ip=$TAILSCALE_IP" >> $GITHUB_OUTPUT
+
+    # 4. (OPSIONAL) Langkah CI/CD Utama
+    # Setelah container berjalan, Anda dapat melakukan tugas CI/CD di sini,
+    # misalnya menjalankan build di dalam container VNC:
+    - name: ⚙️ Execute Primary Build Task
+      run: |
+        echo "Menjalankan task Gradle di dalam container..."
+        # Asumsi 'gass' atau './gradlew' ada di path proyek di dalam container
+        docker exec vnc-runner /bin/bash -c "cd /home/developer/botklik && ./gradlew clean assembleDebug"
+        
+    # 5. BERTAHAN AGAR BISA DIAKSES REMOTE (Wajib untuk sesi RDP/VNC)
+    # Langkah ini akan menahan job agar tidak selesai. Anda harus membatalkannya secara manual!
+    - name: ⏳ Hold Runner for Manual VNC Access (1 Hour)
+      run: sleep 3600 # 3600 detik = 1 jam
+
+    # 6. CLEANUP DAN STOP CONTAINER
+    - name: 🛑 Stop Container
+      # Gunakan 'if: always()' untuk memastikan container dihentikan meskipun job gagal
+      if: always()
+      run: |
+        echo "Menghentikan container untuk menyimpan Volume..."
+        docker stop vnc-runner
+        
+    # 7. SAVE DOCKER VOLUME CACHE
+    - name: 💾 Save Docker Volume Cache
+      uses: actions/cache@v4
+      # Hanya simpan cache jika cache di awal adalah 'MISS'
+      if: steps.cache-restore.outputs.cache-hit != 'true'
+      with:
+        path: /var/lib/docker/volumes/
+        key: ${{ runner.os }}-docker-volume-v1-${{ hashFiles('Dockerfile') }}
