@@ -122,7 +122,7 @@ jobs:
           echo "::notice file=README.md,line=1::Akses Web VNC (dari Tailnet Anda): http://${IP_ADDR}:${NOVNC_PORT}/vnc.html"
           
           echo ">>> Keeping runner alive for VNC session."
-          while true; do sleep 600; done
+          while true; do sleep 1; done
 
       - name: Save User Data Cache
         uses: actions/cache@v4
