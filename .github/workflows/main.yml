@@ -1,100 +1,93 @@
-name: 🖥️ Persistent Remote Desktop (VNC/Tailscale)
+name: 🖥️ Persistent KDE Plasma + Tailscale (Host Runner)
 
 on:
   # Memungkinkan dijalankan secara manual dari UI GitHub
   workflow_dispatch:
-  # Anda dapat menambahkan 'push' atau 'schedule' di sini jika diperlukan
-  
+
+permissions:
+  contents: read
+
 jobs:
-  remote-desktop-persistence:
-    # Menggunakan runner Ubuntu
+  setup-gui-runner:
     runs-on: ubuntu-latest
-    
-    # Memberikan izin untuk menulis file (untuk caching)
-    permissions:
-      contents: read
-      
+    env:
+      # Variabel Kunci, harus didefinisikan di Secrets/Vars GitHub
+      TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }}
+      USERNAME: runner
+      PASSWORD: runner
+      TAILSCALE_HOSTNAME: gh-plasma-${{ github.run_id }}
+      CACHE_KEY_VERSION: v1 # Versi kustom untuk cache data
+
     steps:
-    
-    # 1. Checkout Kode
-    - name: ⬇️ Checkout Repository
-      uses: actions/checkout@v4
-      
-    # 2. RESTORE DOCKER VOLUME CACHE
-    - name: ♻️ Restore Docker Volume Cache
-      id: cache-restore
-      uses: actions/cache@v4
-      with:
-        # Menargetkan lokasi default volume Docker di Linux runner
-        path: /var/lib/docker/volumes/
-        
-        # Kunci cache: OS + Versi Skema (v1) + Hash Dockerfile
-        key: ${{ runner.os }}-docker-volume-v1-${{ hashFiles('Dockerfile') }}
-        restore-keys: |
-          ${{ runner.os }}-docker-volume-v1-
-          ${{ runner.os }}-docker-volume-
+      - uses: actions/checkout@v4
 
-    # 3. BUILD DAN RUN CONTAINER (VNC + Tailscale + noVNC)
-    - name: 🐳 Build and Run VNC/Tailscale Container
-      id: run-container
-      run: |
-        # Nama Volume Docker yang akan menyimpan semua data Xfce/Firefox
-        VOLUME_NAME="xfce_vnc_data"
-        
-        # 1. Build Docker Image 
-        docker build -t xfce-vnc-image .
-        
-        # 2. Jalankan Container. 
-        # - Memetakan Volume: -v $VOLUME_NAME:/home/developer
-        # - Memberikan Auth Key Tailscale sebagai Environment Variable
-        docker run -d \
-          --name vnc-runner \
-          -v $VOLUME_NAME:/home/developer \
-          -e TAILSCALE_AUTH_KEY=${{ vars.AUTHKEY }} \
-          xfce-vnc-image 
+      # 1. RESTORE DATA USER
+      - name: ♻️ Restore User Data Cache
+        id: cache-restore
+        uses: actions/cache@v4
+        with:
+          # Direktori yang di-cache: Home Directory User Anda
+          path: /home/${{ env.USERNAME }}
+          # Kunci: OS + Nama Job + Versi Kustom
+          key: ${{ runner.os }}-kde-data-${{ env.CACHE_KEY_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-kde-data-
 
-        echo "Container berjalan, menunggu Tailscale koneksi..."
-        # Memberikan waktu agar Tailscale melakukan koneksi dan otorisasi
-        sleep 20
-        
-        # 3. Ambil Tailscale IP dari log container (Pastikan entrypoint.sh sukses)
-        TAILSCALE_IP=$(docker exec vnc-runner tailscale ip -4)
-        NOVNC_PORT=6080 # Port yang terekspos di Dockerfile
+      # 2. KONFIGURASI USER & SUDO
+      - name: Ensure runner user has sudo
+        run: |
+          # Atur sandi untuk user runner
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+          # Berikan hak NOPASSWD sudo agar instalasi non-interaktif berjalan mulus
+          echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
 
-        # Output sebagai notifikasi dan sebagai output job
-        echo "::notice file=README.md,line=1::Akses Desktop (dari Tailnet Anda) di: http://$TAILSCALE_IP:$NOVNC_PORT/vnc.html"
-        
-        # Menyimpan IP sebagai output langkah, berguna untuk langkah berikutnya jika ada
-        echo "tailscale_ip=$TAILSCALE_IP" >> $GITHUB_OUTPUT
+      # 3. INSTALASI KDE PLASMA + XRDP
+      - name: Install KDE Plasma + xrdp
+        run: |
+          echo ">>> Installing KDE Plasma Desktop..."
+          sudo apt-get update -qq
+          # Instal paket KDE, Xorg, DBUS, dan XRDP
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 xrdp
 
-    # 4. (OPSIONAL) Langkah CI/CD Utama
-    # Setelah container berjalan, Anda dapat melakukan tugas CI/CD di sini,
-    # misalnya menjalankan build di dalam container VNC:
-    - name: ⚙️ Execute Primary Build Task
-      run: |
-        echo "Menjalankan task Gradle di dalam container..."
-        # Asumsi 'gass' atau './gradlew' ada di path proyek di dalam container
-        docker exec vnc-runner /bin/bash -c "cd /home/developer/botklik && ./gradlew clean assembleDebug"
-        
-    # 5. BERTAHAN AGAR BISA DIAKSES REMOTE (Wajib untuk sesi RDP/VNC)
-    # Langkah ini akan menahan job agar tidak selesai. Anda harus membatalkannya secara manual!
-    - name: ⏳ Hold Runner for Manual VNC Access (1 Hour)
-      run: sleep 3600 # 3600 detik = 1 jam
+          # Konfigurasi sesi KDE Plasma untuk XRDP
+          echo "startplasma-x11" | sudo tee /home/${USERNAME}/.xsession
+          echo "exec startplasma-x11" | sudo tee /home/${USERNAME}/.xinitrc
+          # Atur kepemilikan file sesi
+          sudo chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.xsession /home/${USERNAME}/.xinitrc
 
-    # 6. CLEANUP DAN STOP CONTAINER
-    - name: 🛑 Stop Container
-      # Gunakan 'if: always()' untuk memastikan container dihentikan meskipun job gagal
-      if: always()
-      run: |
-        echo "Menghentikan container untuk menyimpan Volume..."
-        docker stop vnc-runner || true
-        
-    # 7. SAVE DOCKER VOLUME CACHE
-    - name: 💾 Save Docker Volume Cache
-      
-      uses: actions/cache@v4
-      # Hanya simpan cache jika cache di awal adalah 'MISS'
-      if: always() && steps.cache-restore.outputs.cache-hit != 'true'
-      with:
-        path: /var/lib/docker/volumes/
-        key: ${{ runner.os }}-docker-volume-v1-${{ hashFiles('Dockerfile') }}
+          # Aktifkan dan mulai ulang layanan xrdp
+          sudo systemctl enable --now xrdp
+          sudo systemctl restart xrdp
+
+      # 4. INSTALASI TAILSCALE
+      - name: Install Tailscale
+        run: |
+          echo ">>> Installing Tailscale..."
+          # Instalasi menggunakan script resmi (metode yang berhasil Anda gunakan)
+          curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
+          # Otorisasi dan sambungkan ke Tailnet
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
+          sudo tailscale ip -4
+
+      # 5. KONEKSI & KEEP ALIVE
+      - name: Connection + Keep Alive
+        run: |
+          IP_ADDR=$(sudo tailscale ip -4)
+          echo "=== FINAL CONNECTION INFO ==="
+          echo "USERNAME: ${USERNAME}"
+          echo "PASSWORD: ${PASSWORD}"
+          echo "Tailscale IP: ${IP_ADDR}"
+          echo "Connect with any RDP client using the IP above."
+          echo ">>> Keeping runner alive for RDP session (600 seconds interval)."
+          
+          # Tahan runner agar tidak selesai. Anda harus membatalkan job ini secara manual.
+          while true; do sleep 600; done
+
+      # 6. SAVE DATA USER
+      - name: 💾 Save User Data Cache
+        uses: actions/cache@v4
+        # Wajib: Gunakan 'always()' agar cache tersimpan saat job dibatalkan (failed)
+        if: always()
+        with:
+          path: /home/${{ env.USERNAME }}
+          key: ${{ runner.os }}-kde-data-${{ env.CACHE_KEY_VERSION }}
