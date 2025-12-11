@@ -87,13 +87,14 @@ jobs:
       if: always()
       run: |
         echo "Menghentikan container untuk menyimpan Volume..."
-        docker stop vnc-runner
+        docker stop vnc-runner || true
         
     # 7. SAVE DOCKER VOLUME CACHE
     - name: 💾 Save Docker Volume Cache
+      
       uses: actions/cache@v4
       # Hanya simpan cache jika cache di awal adalah 'MISS'
-      if: steps.cache-restore.outputs.cache-hit != 'true'
+      if: always() && steps.cache-restore.outputs.cache-hit != 'true'
       with:
         path: /var/lib/docker/volumes/
         key: ${{ runner.os }}-docker-volume-v1-${{ hashFiles('Dockerfile') }}
