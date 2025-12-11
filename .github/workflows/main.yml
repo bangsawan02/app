@@ -1,10 +1,12 @@
 name: 🖥️ Persistent Xfce + Tailscale (Host Runner, VNC/noVNC)
 
 on:
+  # Pemicu manual agar bisa dijalankan dari UI GitHub
   workflow_dispatch:
 
 permissions:
-  contents: write
+  # 'write' diperlukan untuk menyimpan cache
+  contents: write 
 
 jobs:
   setup-gui-runner:
@@ -23,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # ===============================================
-      # 1. CACHING APT PACKAGES
+      # 1. CACHING APT PACKAGES (Restore)
       # ===============================================
       - name: 📦 1. Restore APT Cache (Paket Instalasi)
         id: cache-apt-restore
@@ -32,7 +34,8 @@ jobs:
           path: /var/cache/apt/archives
           key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }} 
 
-      # 🔥 LANGKAH BARU: Clean up APT Cache Locks 🔥
+      # 🔥 FIX CACHING: Clean up APT Cache Locks 🔥
+      # Dijalankan SELALU untuk memastikan tidak ada file lock yang tersisa dari cache sebelumnya.
       - name: Clean up apt cache
         if: always()
         run: |
@@ -42,17 +45,18 @@ jobs:
           sudo rm -rf /var/cache/apt/archives/partial
           sudo rm -rf /var/lib/apt/lists/partial
           
-      # 🔥 LANGKAH BARU: Grant Permissions to APT cache 🔥
-      # Mengatasi masalah izin yang mungkin muncul setelah restore cache
+      # 🔥 FIX CACHING: Grant Permissions to APT cache 🔥
+      # Mengubah kepemilikan APT cache agar user '$USERNAME' dapat menggunakannya.
       - name: Grant permissions to APT cache
         if: always()
         run: |
           echo "Mengubah kepemilikan APT cache ke user $USERNAME..."
-          sudo chown -R $USER:$USER /var/cache/apt
-          sudo chown -R $USER:$USER /var/lib/apt
+          # Menggunakan $USERNAME dari env: untuk konsistensi.
+          sudo chown -R $USERNAME:$USERNAME /var/cache/apt
+          sudo chown -R $USERNAME:$USERNAME /var/lib/apt
 
       # ===============================================
-      # 2. CACHING USER DATA
+      # 2. CACHING USER DATA (Restore)
       # ===============================================
       - name: ♻️ 2. Restore User Data Cache (Home: /home/runner)
         id: cache-user-restore
@@ -151,11 +155,13 @@ jobs:
           echo "::notice file=README.md,line=1::Akses Web VNC (dari Tailnet Anda): http://${IP_ADDR}:${NOVNC_PORT}/vnc.html"
           
           echo ">>> Keeping runner alive for VNC session."
+          # Menahan job selama 600 detik (10 menit). Anda harus membatalkan job ini secara manual.
           while true; do sleep 600; done
 
       # 9. SAVE USER DATA (Wajib di Akhir, Walau Job Gagal/Dibatalkan)
       - name: 💾 Save User Data Cache (Wajib)
         uses: actions/cache@v4
+        # Menggunakan 'always()' untuk memastikan data tersimpan walaupun sesi dibatalkan
         if: always()
         with:
           path: /home/${{ env.USERNAME }}
