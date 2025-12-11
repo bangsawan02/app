@@ -1,4 +1,7 @@
-# Gunakan Ubuntu Bionic (18.04) sebagai base image
+# ==========================================================
+# Dockerfile: Persistent Remote Desktop (VNC/noVNC/Tailscale)
+# Base OS: Ubuntu 18.04 Bionic (Plucky)
+# ==========================================================
 FROM ubuntu:18.04
 
 # Set environment variables
@@ -6,62 +9,69 @@ ENV HOME /home/developer
 ENV USER developer
 ENV DEBIAN_FRONTEND noninteractive
 
-# --- 1. Instalasi Dasar & Desktop (Tambahkan Paket noVNC) ---
+# --- 1. Instalasi Dasar & Desktop (Termasuk Paket noVNC dan Dependensi) ---
 RUN apt update \
+    # Upgrade dan instal alat dasar
     && apt install -y \
         sudo \
         wget \
         net-tools \
         dbus-x11 \
+        # Xfce Desktop Environment
         xfce4 xfce4-goodies \
-        # Menggunakan TigerVNC
+        # TigerVNC Server
         tigervnc-standalone-server \
+        # Font dasar
         xfonts-base \
         firefox \
-        # 🔥 Paket yang diperlukan untuk noVNC (websockify dan git) 🔥
+        # Paket yang diperlukan untuk noVNC/Websockify
         python python-pip git \
-        # Instal Tailscale
+        # Instalasi Tailscale
         apt-transport-https \
     && rm -rf /var/lib/apt/lists/*
 
 # --- 2. Instalasi noVNC ---
-# Kloning repositori noVNC ke direktori
+# Kloning repositori noVNC ke direktori /opt
 RUN git clone https://github.com/novnc/noVNC.git /opt/noVNC \
     && git clone https://github.com/novnc/websockify /opt/noVNC/utils/websockify \
     && pip install Pillow
 
-# --- 3. Konfigurasi User dan VNC Startup (Sama seperti sebelumnya) ---
+# --- 3. Konfigurasi User ---
+# Buat user baru 'developer' dan tambahkan ke grup sudo
 RUN useradd -m $USER \
     && echo "$USER:passwordku" | chpasswd \
     && adduser $USER sudo
 
+# Ganti ke user non-root untuk konfigurasi VNC
 USER $USER
 WORKDIR $HOME
 
-# Konfigurasi VNC Startup: Xfce
-RUN mkdir -p $HOME/.vnc \
-    && echo '#!/bin/bash' > $HOME/.vnc/xstartup \
-    && echo 'unset SESSION_MANAGER' >> $HOME/.vnc/xstartup \
-    && echo 'unset DBUS_SESSION_BUS_ADDRESS' >> $HOME/.vnc/xstartup \
-    && echo 'startxfce4 &' >> $HOME/.vnc/xstartup \
-    && chmod +x $HOME/.vnc/xstartup
+# --- 4. Konfigurasi VNC Startup (Perbaikan Error $HOME) ---
+# 🔥 Menggunakan path absolut /home/developer untuk memastikan RUN berhasil 🔥
+RUN mkdir -p /home/developer/.vnc \
+    && echo '#!/bin/bash' > /home/developer/.vnc/xstartup \
+    && echo 'unset SESSION_MANAGER' >> /home/developer/.vnc/xstartup \
+    && echo 'unset DBUS_SESSION_BUS_ADDRESS' >> /home/developer/.vnc/xstartup \
+    && echo 'startxfce4 &' >> /home/developer/.vnc/xstartup \
+    && chmod +x /home/developer/.vnc/xstartup
 
-# Tetapkan sandi VNC (hanya untuk server VNC, bukan noVNC/Web)
-RUN echo "vncpwd" | vncpasswd -f > $HOME/.vnc/passwd \
-    && chmod 600 $HOME/.vnc/passwd
+# Tetapkan sandi VNC (digunakan untuk otentikasi VNC)
+RUN echo "vncpwd" | vncpasswd -f > /home/developer/.vnc/passwd \
+    && chmod 600 /home/developer/.vnc/passwd
 
-# --- 4. Instalasi Tailscale ---
+# --- 5. Instalasi Tailscale (Kembali ke Root) ---
 USER root
 RUN curl -fsSL https://pkgs.tailscale.com/ubuntu/KEY.gpg | sudo apt-key add - \
     && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/bionic.list | sudo tee /etc/apt/sources.list.d/tailscale.list \
     && apt update \
     && apt install -y tailscale
 
-# --- 5. Entrypoint Script (Termasuk VNC dan noVNC) ---
+# --- 6. Entrypoint Script ---
+# Entrypoint akan memulai Tailscale, VNC, dan noVNC
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# 🔥 Port Web noVNC 🔥
+# Port noVNC standar (untuk akses web)
 EXPOSE 6080
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
