@@ -20,7 +20,7 @@ echo "--- Mengautentikasi Tailscale ---"
 tailscaled &
 sleep 5
 # Gunakan --accept-dns dan --accept-routes jika diperlukan di lingkungan Anda
-tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=github-runner-vnc --accept-routes
+sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=github-runner-vnc --accept-routes
 
 echo "--- Menunggu Tailscale Connect ---"
 sleep 15
