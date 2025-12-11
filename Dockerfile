@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND noninteractive
 RUN apt update -qq \
     && apt install -yqq \
         sudo \
+        curl \
         wget \
         net-tools \
         dbus-x11 \
@@ -56,19 +57,9 @@ RUN mkdir -p /home/developer/.vnc \
 # --- 5. Instalasi Tailscale (MODERN & STABIL) ---
 USER root
 # Pastikan wget diinstal
-RUN apt update -qq && apt install -yqq wget > /dev/null 2>&1
+RUN curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
+         
 
-# 🔥 Menggunakan metode GPG Keyring modern untuk mengatasi error 'apt-key' 🔥
-RUN wget -q -O /usr/share/keyrings/tailscale-archive-keyring.gpg https://pkgs.tailscale.com/stable/ubuntu/jammy.gpg \
-    > /dev/null 2>&1
-
-# Tambahkan repositori Tailscale menggunakan keyring
-RUN echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu jammy main" | sudo tee /etc/apt/sources.list.d/tailscale.list \
-    > /dev/null
-
-# Instalasi Tailscale
-RUN apt update -qq > /dev/null 2>&1 \
-    && apt install -yqq tailscale > /dev/null 2>&1
 
 # --- 6. Entrypoint Script ---
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
