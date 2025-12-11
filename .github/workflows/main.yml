@@ -1,4 +1,4 @@
-name: 🖥️ Persistent Xfce + Tailscale (Host Runner, VNC/noVNC)
+name: 🖥️ Persistent LXDE + Tailscale (Host Runner, VNC/noVNC)
 
 on:
   # Pemicu manual agar bisa dijalankan dari UI GitHub
@@ -19,7 +19,8 @@ jobs:
       VNC_DISPLAY: ":1"
       VNC_PORT: 5901
       NOVNC_PORT: 6080
-      CACHE_KEY_VERSION: v2 # Versi Kustom Cache
+      CACHE_KEY_VERSION: v3 # Mengubah desktop (Xfce -> LXDE), jadi versi cache diupdate
+      LXDE_STARTUP_COMMAND: 'startlxde' # Perintah untuk memulai LXDE
 
     steps:
       - uses: actions/checkout@v4
@@ -32,10 +33,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
+          # Kunci diupdate karena paket yang diinstal akan berubah (LXDE vs Xfce)
           key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }} 
 
-      # 🔥 FIX CACHING: Clean up APT Cache Locks 🔥
-      # Dijalankan SELALU untuk memastikan tidak ada file lock yang tersisa dari cache sebelumnya.
+      # FIX CACHING: Clean up APT Cache Locks
       - name: Clean up apt cache
         if: always()
         run: |
@@ -45,13 +46,11 @@ jobs:
           sudo rm -rf /var/cache/apt/archives/partial
           sudo rm -rf /var/lib/apt/lists/partial
           
-      # 🔥 FIX CACHING: Grant Permissions to APT cache 🔥
-      # Mengubah kepemilikan APT cache agar user '$USERNAME' dapat menggunakannya.
+      # FIX CACHING: Grant Permissions to APT cache
       - name: Grant permissions to APT cache
         if: always()
         run: |
           echo "Mengubah kepemilikan APT cache ke user $USERNAME..."
-          # Menggunakan $USERNAME dari env: untuk konsistensi.
           sudo chown -R $USERNAME:$USERNAME /var/cache/apt
           sudo chown -R $USERNAME:$USERNAME /var/lib/apt
 
@@ -63,9 +62,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/${{ env.USERNAME }}
-          key: ${{ runner.os }}-xfce-data-${{ env.CACHE_KEY_VERSION }}
+          # Kunci diupdate karena konfigurasi desktop berubah
+          key: ${{ runner.os }}-lxde-data-${{ env.CACHE_KEY_VERSION }}
           restore-keys: |
-            ${{ runner.os }}-xfce-data-
+            ${{ runner.os }}-lxde-data-
 
       # 3. KONFIGURASI USER & SUDO
       - name: Configure User (Runner)
@@ -73,13 +73,14 @@ jobs:
           echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
 
-      # 4. INSTALASI XFCE, VNC, & NOVNC
-      - name: 💻 Install Xfce, VNC, noVNC, and Setup
+      # 4. INSTALASI LXDE, VNC, & NOVNC
+      - name: 💻 Install LXDE, VNC, noVNC, and Setup
         run: |
-          echo ">>> Installing Desktop, VNC, and Dependencies..."
+          echo ">>> Installing Desktop LXDE, VNC, and Dependencies..."
           sudo apt update -qq
+          # --- PERUBAHAN UTAMA: MENGINSTAL LXDE ---
           sudo apt install -y -qq \
-            xfce4 xfce4-goodies \
+            lxde-core \
             tigervnc-standalone-server \
             dbus-x11 \
             python3-pip git net-tools \
@@ -94,10 +95,11 @@ jobs:
           echo "Membuat konfigurasi VNC untuk user $USERNAME..."
           sudo mkdir -p /home/${USERNAME}/.vnc
           
+          # --- PERUBAHAN UTAMA: MENGGUNAKAN startlxde ---
           VNC_XSTARTUP='#!/bin/bash
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
-          startxfce4 &'
+          /usr/bin/${{ env.LXDE_STARTUP_COMMAND }}'
           
           echo "$VNC_XSTARTUP" | sudo tee /home/${USERNAME}/.vnc/xstartup
           sudo chmod +x /home/${USERNAME}/.vnc/xstartup
@@ -115,7 +117,6 @@ jobs:
       # 5. SAVE APT CACHE
       - name: 💾 Save APT Cache
         uses: actions/cache@v4
-        # Hanya simpan jika instalasi paket di langkah 4 berhasil
         if: success()
         with:
           path: /var/cache/apt/archives
@@ -148,21 +149,19 @@ jobs:
         run: |
           IP_ADDR=$(sudo tailscale ip -4)
           echo "::notice file=README.md,line=1::=== FINAL CONNECTION INFO ==="
-          echo "::notice file=README.md,line=1::Desktop: Xfce4 (VNC/noVNC)"
+          echo "::notice file=README.md,line=1::Desktop: LXDE (VNC/noVNC)"
           echo "::notice file=README.md,line=1::USERNAME: ${USERNAME}"
           echo "::notice file=README.md,line=1::PASSWORD: ${PASSWORD}"
           echo "::notice file=README.md,line=1::Tailscale IP: ${IP_ADDR}"
           echo "::notice file=README.md,line=1::Akses Web VNC (dari Tailnet Anda): http://${IP_ADDR}:${NOVNC_PORT}/vnc.html"
           
           echo ">>> Keeping runner alive for VNC session."
-          # Menahan job selama 600 detik (10 menit). Anda harus membatalkan job ini secara manual.
           while true; do sleep 600; done
 
       # 9. SAVE USER DATA (Wajib di Akhir, Walau Job Gagal/Dibatalkan)
       - name: 💾 Save User Data Cache (Wajib)
         uses: actions/cache@v4
-        # Menggunakan 'always()' untuk memastikan data tersimpan walaupun sesi dibatalkan
         if: always()
         with:
           path: /home/${{ env.USERNAME }}
-          key: ${{ runner.os }}-xfce-data-${{ env.CACHE_KEY_VERSION }}
+          key: ${{ runner.os }}-lxde-data-${{ env.CACHE_KEY_VERSION }}
