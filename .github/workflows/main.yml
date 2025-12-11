@@ -1,167 +1,99 @@
-name: 🖥️ Persistent LXDE + Tailscale (Host Runner, VNC/noVNC)
+# .github/workflows/setup-gui-runner.yml
+
+name: setup KDE Plasma + Tailscale + VNC/NoVNC
 
 on:
-  # Pemicu manual agar bisa dijalankan dari UI GitHub
   workflow_dispatch:
 
 permissions:
-  # 'write' diperlukan untuk menyimpan cache
-  contents: write 
+  contents: read
 
 jobs:
   setup-gui-runner:
     runs-on: ubuntu-latest
     env:
-      TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }}
+      TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }} # Harus disetel sebagai GitHub Variable/Secret
       USERNAME: runner
       PASSWORD: runner
-      TAILSCALE_HOSTNAME: gh-vnc-${{ github.run_id }}
-      VNC_DISPLAY: ":1"
-      VNC_PORT: 5901
-      NOVNC_PORT: 6080
-      CACHE_KEY_VERSION: v3 # Mengubah desktop (Xfce -> LXDE), jadi versi cache diupdate
-      LXDE_STARTUP_COMMAND: 'startlxde' # Perintah untuk memulai LXDE
+      VNC_DISPLAY: ':1' 
+      VNC_PORT: 5901   
+      NOVNC_PORT: 6080 
+      
+      # Gunakan Run ID di hostname agar unik
+      TAILSCALE_HOSTNAME: gh-plasma-${{ github.run_id }} 
 
     steps:
       - uses: actions/checkout@v4
 
-      # ===============================================
-      # 1. CACHING APT PACKAGES (Restore)
-      # ===============================================
-      - name: 📦 1. Restore APT Cache (Paket Instalasi)
-        id: cache-apt-restore
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          # Kunci diupdate karena paket yang diinstal akan berubah (LXDE vs Xfce)
-          key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }} 
-
-      # FIX CACHING: Clean up APT Cache Locks
-      - name: Clean up apt cache
-        if: always()
+      - name: Setup User Password
         run: |
-          echo "Menghapus lock dan partial files APT..."
-          sudo rm -f /var/cache/apt/archives/lock
-          sudo rm -f /var/lib/apt/lists/lock
-          sudo rm -rf /var/cache/apt/archives/partial
-          sudo rm -rf /var/lib/apt/lists/partial
-          
-      # FIX CACHING: Grant Permissions to APT cache
-      - name: Grant permissions to APT cache
-        if: always()
-        run: |
-          echo "Mengubah kepemilikan APT cache ke user $USERNAME..."
-          sudo chown -R $USERNAME:$USERNAME /var/cache/apt
-          sudo chown -R $USERNAME:$USERNAME /var/lib/apt
-
-      # ===============================================
-      # 2. CACHING USER DATA (Restore)
-      # ===============================================
-      - name: ♻️ 2. Restore User Data Cache (Home: /home/runner)
-        id: cache-user-restore
-        uses: actions/cache@v4
-        with:
-          path: /home/${{ env.USERNAME }}
-          # Kunci diupdate karena konfigurasi desktop berubah
-          key: ${{ runner.os }}-lxde-data-${{ env.CACHE_KEY_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-lxde-data-
-
-      # 3. KONFIGURASI USER & SUDO
-      - name: Configure User (Runner)
-        run: |
+          # Buat pengguna runner jika belum ada dan setel sandi
+          sudo useradd -m -s /bin/bash ${USERNAME} || echo "User ${USERNAME} already exists."
           echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
-
-      # 4. INSTALASI LXDE, VNC, & NOVNC
-      - name: 💻 Install LXDE, VNC, noVNC, and Setup
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+          
+      - name: Install Desktop, VNC Server, dan NoVNC
         run: |
-          echo ">>> Installing Desktop LXDE, VNC, and Dependencies..."
-          sudo apt update -qq
-          # --- PERUBAHAN UTAMA: MENGINSTAL LXDE ---
-          sudo apt install -y -qq \
-            lxde-core \
-            tigervnc-standalone-server \
-            dbus-x11 \
-            python3-pip git net-tools \
-            > /dev/null 2>&1
+          echo ">>> Installing Desktop & VNC components..."
+          sudo apt-get update -qq
+          # Instal KDE, VNC Server, dan utilitas pendukung
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop tightvncserver xterm websockify net-tools 
           
-          # Instalasi noVNC
-          sudo git clone https://github.com/novnc/noVNC.git /opt/noVNC
-          sudo git clone https://github.com/novnc/websockify /opt/noVNC/utils/websockify
-          sudo pip3 install websockify
+          # Unduh dan Instal NoVNC
+          mkdir -p /home/${USERNAME}/novnc
+          cd /home/${USERNAME}/novnc
+          # Menggunakan versi stabil
+          wget https://github.com/novnc/noVNC/archive/refs/tags/v1.3.0.tar.gz
+          tar -xzvf v1.3.0.tar.gz > /dev/null
+          mv noVNC-1.3.0 www
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/novnc
           
-          # Konfigurasi VNC xstartup
-          echo "Membuat konfigurasi VNC untuk user $USERNAME..."
-          sudo mkdir -p /home/${USERNAME}/.vnc
-          
-          # --- PERUBAHAN UTAMA: MENGGUNAKAN startlxde ---
-          VNC_XSTARTUP='#!/bin/bash
-          unset SESSION_MANAGER
-          unset DBUS_SESSION_BUS_ADDRESS
-          /usr/bin/${{ env.LXDE_STARTUP_COMMAND }}'
-          
-          echo "$VNC_XSTARTUP" | sudo tee /home/${USERNAME}/.vnc/xstartup
-          sudo chmod +x /home/${USERNAME}/.vnc/xstartup
-          
-          # Set VNC password
-          echo "${PASSWORD}" | vncpasswd -f | sudo tee /home/${USERNAME}/.vnc/passwd
-          
-          # Atur kepemilikan
-          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
-          sudo chmod 600 /home/${USERNAME}/.vnc/passwd
-          
-          # Bersihkan cache apt setelah instalasi selesai
-          sudo apt clean
-
-      # 5. SAVE APT CACHE
-      - name: 💾 Save APT Cache
-        uses: actions/cache@v4
-        if: success()
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }}
-
-      # 6. INSTALASI DAN START TAILSCALE
-      - name: Install and Start Tailscale
+      - name: Configure and Start VNC Server
         run: |
-          echo ">>> Installing and Starting Tailscale..."
+          # Switch ke user runner untuk konfigurasi VNC
+          sudo -H -u ${USERNAME} bash -c "
+            # Setel sandi VNC
+            echo \"${PASSWORD}\" | vncpasswd -f > /home/${USERNAME}/.vnc/passwd
+            chmod 600 /home/${USERNAME}/.vnc/passwd
+            
+            # Konfigurasi xstartup untuk memulai KDE
+            mkdir -p /home/${USERNAME}/.vnc
+            echo '#!/bin/sh' > /home/${USERNAME}/.vnc/xstartup
+            echo 'xrdb /home/${USERNAME}/.Xresources' >> /home/${USERNAME}/.vnc/xstartup
+            echo 'startkde' >> /home/${USERNAME}/.vnc/xstartup
+            chmod +x /home/${USERNAME}/.vnc/xstartup
+            
+            # Start VNC Server di background
+            vncserver ${VNC_DISPLAY} -geometry 1280x800 -depth 24
+          "
+          
+      - name: Install Tailscale dan Dapatkan IP
+        id: tailscale_setup
+        run: |
+          echo ">>> Installing Tailscale..."
           curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
-          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}" --accept-routes --ssh
-          sleep 5
-          sudo tailscale ip -4
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
 
-      # 7. START VNC SERVER DAN NOVNC
-      - name: 🚀 Start VNC Server and noVNC
+          # Dapatkan IP Tailscale dan setel sebagai variabel lingkungan
+          TAILSCALE_IP=$(sudo tailscale ip -4 | head -n 1)
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
+          
+          # Baris KRUSIAL untuk diekstrak oleh aplikasi Android (Marker)
+          echo "TAILSCALE_IP_OUTPUT::${TAILSCALE_IP}" 
+          
+      - name: Start NoVNC Web Server dan Keep Alive
         run: |
-          echo ">>> Memulai VNC Server dan noVNC..."
-          
-          # Start VNC Server sebagai user runner
-          sudo su - ${USERNAME} -c "/usr/bin/vncserver ${VNC_DISPLAY} -geometry 1280x800 -depth 24"
-          
-          # Start websockify (noVNC) sebagai user runner
-          sudo su - ${USERNAME} -c "/opt/noVNC/utils/websockify/run --web /opt/noVNC ${NOVNC_PORT} localhost:${VNC_PORT} &"
+          echo "=== FINAL CONNECTION INFO ==="
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo "NoVNC URL: http://${{ env.TAILSCALE_IP }}:${NOVNC_PORT}/vnc.html"
+          echo "VNC Password: ${PASSWORD}"
 
-          sleep 5
+          # Start NoVNC Web Server di background, meneruskan koneksi dari 6080 ke VNC 5901
+          sudo -H -u ${USERNAME} bash -c "
+             /usr/bin/websockify ${NOVNC_PORT} localhost:${VNC_PORT} > /home/${USERNAME}/novnc.log 2>&1 &
+          "
           
-      # 8. KONEKSI & KEEP ALIVE
-      - name: Connection + Keep Alive
-        run: |
-          IP_ADDR=$(sudo tailscale ip -4)
-          echo "::notice file=README.md,line=1::=== FINAL CONNECTION INFO ==="
-          echo "::notice file=README.md,line=1::Desktop: LXDE (VNC/noVNC)"
-          echo "::notice file=README.md,line=1::USERNAME: ${USERNAME}"
-          echo "::notice file=README.md,line=1::PASSWORD: ${PASSWORD}"
-          echo "::notice file=README.md,line=1::Tailscale IP: ${IP_ADDR}"
-          echo "::notice file=README.md,line=1::Akses Web VNC (dari Tailnet Anda): http://${IP_ADDR}:${NOVNC_PORT}/vnc.html"
-          
-          echo ">>> Keeping runner alive for VNC session."
-          while true; do sleep 600; done
-
-      # 9. SAVE USER DATA (Wajib di Akhir, Walau Job Gagal/Dibatalkan)
-      - name: 💾 Save User Data Cache (Wajib)
-        uses: actions/cache@v4
-        if: always()
-        with:
-          path: /home/${{ env.USERNAME }}
-          key: ${{ runner.os }}-lxde-data-${{ env.CACHE_KEY_VERSION }}
+          echo ">>> Runner aktif selama 6 jam. Connect now via Android WebView."
+          # Tahan runner selama 6 jam (batas maksimal GitHub)
+          sleep 21600 || true
