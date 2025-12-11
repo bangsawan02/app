@@ -1,60 +1,51 @@
 #!/bin/bash
-# file: entrypoint.sh
+# file: entrypoint.sh (Revisi Akhir)
 
-# ==========================================================
-# Skrip Startup VNC, Tailscale, dan noVNC
-# ==========================================================
+# Dijalankan sebagai ROOT (sesuai setting akhir Dockerfile)
 
 VNC_USER="developer"
 VNC_DISPLAY=":1"
 VNC_PORT="5901"
 NOVNC_PORT="6080"
-TAILSCALE_SOCK="/var/run/tailscale/tailscaled.sock"
+# Variabel lingkungan TAILSCALE_AUTH_KEY dimuat dari GitHub Secrets
 
-# 1. Mulai D-Bus Daemon (untuk Xfce)
+# 1. Instalasi Tailscale (Menggunakan script resmi dari log berhasil Anda)
+echo "--- Memasang Tailscale di Container ---"
+curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
+
+# 2. Mulai D-Bus Daemon 
+# Diperlukan untuk Xfce dan aplikasi desktop
 echo "--- Memulai D-Bus Daemon ---"
 eval $(dbus-launch --sh-syntax)
 
-# 2. Mulai Tailscale Daemon
-echo "--- Memulai Tailscale Daemon (sebagai root) ---"
-# Pastikan daemon berjalan di background dan sebagai root
-sudo tailscaled &
+# 3. Mulai Tailscale Daemon dan Otentikasi
+echo "--- Memulai Tailscale Daemon dan Autentikasi ---"
+# tailscaled dijalankan sebagai root (karena ENTRYPOINT user=root)
+tailscaled & 
+sleep 5 # Berikan jeda pendek agar daemon dapat memulai
 
-# 3. WAITING LOOP: Tunggu Socket Daemon
-echo "--- Menunggu Tailscale Socket ($TAILSCALE_SOCK) aktif ---"
-TIMEOUT=30
-while [ ! -e $TAILSCALE_SOCK ] && [ $TIMEOUT -gt 0 ]; do
-    echo "Socket belum ditemukan. Menunggu $TIMEOUT detik lagi..."
-    sleep 2
-    TIMEOUT=$((TIMEOUT-2))
-done
+# Otorisasi Tailscale
+tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=github-runner-vnc --accept-routes
 
-if [ $TIMEOUT -le 0 ]; then
-    echo "ERROR: Tailscale daemon gagal memulai dalam waktu yang ditentukan."
-    exit 1
-fi
-
-# 4. Otorisasi Tailscale
-echo "--- Mengautentikasi Tailscale ---"
-# Gunakan sudo untuk menjalankan klien tailscale
-sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=github-runner-vnc --accept-routes
-
-# 5. Tunggu hingga Tailscale terhubung dan mendapatkan IP
+# 4. Tunggu koneksi & Dapatkan IP
 echo "--- Menunggu Tailscale Connect ---"
-sleep 15
-IP_VNC=$(sudo tailscale ip -4)
+sleep 10
+IP_VNC=$(tailscale ip -4)
+echo "Tailscale IP: $IP_VNC"
 
-# 6. Mulai VNC Server (Berjalan sebagai user 'developer')
-echo "--- Memulai VNC Server di $VNC_DISPLAY ---"
-/usr/bin/vncserver $VNC_DISPLAY -geometry 1280x800 -depth 24
+# 5. Mulai VNC Server dan noVNC (Dialihkan ke User Developer)
+echo "--- Memulai VNC Server dan noVNC sebagai $VNC_USER ---"
 
-# 7. Mulai noVNC (Websockify)
-echo "--- Memulai noVNC di Port $NOVNC_PORT ---"
-/opt/noVNC/utils/websockify/run --web /opt/noVNC $NOVNC_PORT localhost:$VNC_PORT &
+# Jalankan Xfce/VNC dan noVNC sebagai user non-root 'developer'
+su - $VNC_USER -c "
+    /usr/bin/vncserver $VNC_DISPLAY -geometry 1280x800 -depth 24; 
+    /opt/noVNC/utils/websockify/run --web /opt/noVNC $NOVNC_PORT localhost:$VNC_PORT &
+"
 
-# 8. Output dan Pertahankan Container Tetap Berjalan
-echo "::notice file=README.md,line=1::Akses Desktop di URL berikut (dari Tailnet Anda):"
+# 6. Output dan Pertahankan Container Tetap Berjalan
+echo "::notice file=README.md,line=1::Akses Desktop (dari Tailnet Anda) di URL:"
 echo "::notice file=README.md,line=1::http://$IP_VNC:$NOVNC_PORT/vnc.html"
 echo "::set-output name=tailscale_ip::$IP_VNC"
 
+# Pertahankan container tetap berjalan agar sesi VNC dapat diakses.
 exec /bin/bash -c "trap : TERM INT; sleep infinity & wait"
