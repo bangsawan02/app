@@ -35,26 +35,30 @@ RUN git clone https://github.com/novnc/noVNC.git /opt/noVNC \
     && pip install Pillow
 
 # --- 3. Konfigurasi User (Sebagai Root) ---
-# Buat user baru 'developer' dan tambahkan ke grup sudo
 USER root
+# Membuat user baru dan memastikan home directory memiliki izin dasar yang benar
 RUN useradd -m $USER \
     && echo "$USER:passwordku" | chpasswd \
-    && adduser $USER sudo
+    && adduser $USER sudo \
+    && chmod 755 /home/developer
 
-# --- 4. Konfigurasi VNC Startup (Dijalankan sebagai Root, Izin Disetel) ---
-# Menggunakan path absolut dan chown untuk mengatasi masalah 'Permission denied'
+# --- 4. Konfigurasi VNC Startup (DIJALANKAN SEBAGAI ROOT, Izin Diberikan) ---
+# Langkah ini harus berhasil 100% karena semua perintah dijalankan oleh Root,
+# kemudian kepemilikan dialihkan ke user 'developer'.
 RUN mkdir -p /home/developer/.vnc \
+    # Membuat xstartup file
     && echo '#!/bin/bash' > /home/developer/.vnc/xstartup \
     && echo 'unset SESSION_MANAGER' >> /home/developer/.vnc/xstartup \
     && echo 'unset DBUS_SESSION_BUS_ADDRESS' >> /home/developer/.vnc/xstartup \
     && echo 'startxfce4 &' >> /home/developer/.vnc/xstartup \
     && chmod +x /home/developer/.vnc/xstartup \
+    \
+    # Membuat sandi VNC (Dummy)
+    && echo "vncpwd" | vncpasswd -f > /home/developer/.vnc/passwd \
+    \
+    # 🔥 PENTING: Mengalihkan Kepemilikan (CHOWN) 🔥
     && chown -R $USER:$USER /home/developer/.vnc \
-    && chmod 700 /home/developer/.vnc
-
-# Tetapkan sandi VNC (Dijalankan sebagai user 'developer' melalui su -c)
-RUN echo "vncpwd" | su $USER -c "vncpasswd -f > /home/developer/.vnc/passwd" \
-    && chown $USER:$USER /home/developer/.vnc/passwd \
+    && chmod 700 /home/developer/.vnc \
     && chmod 600 /home/developer/.vnc/passwd
 
 # --- 5. Instalasi Tailscale ---
@@ -72,7 +76,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 EXPOSE 6080
 
 # Beralih ke user non-root (developer) sebelum menjalankan ENTRYPOINT
-# Ini penting agar VNC dan Xfce berjalan dengan izin yang benar
 USER $USER
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
