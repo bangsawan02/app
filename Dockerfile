@@ -13,7 +13,6 @@ ENV DEBIAN_FRONTEND noninteractive
 RUN apt update -qq \
     && apt install -yqq \
         sudo \
-        curl \
         wget \
         net-tools \
         dbus-x11 \
@@ -54,20 +53,14 @@ RUN mkdir -p /home/developer/.vnc \
     && chmod 700 /home/developer/.vnc \
     && chmod 600 /home/developer/.vnc/passwd
 
-# --- 5. Instalasi Tailscale (MODERN & STABIL) ---
-USER root
-# Pastikan wget diinstal
-RUN curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
-         
-
-
-# --- 6. Entrypoint Script ---
+# --- 5. Entrypoint Script dan Tailscale Setup ---
+# Tailscale akan diinstal di Entrypoint menggunakan script resmi
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 6080
 
-# Beralih ke user non-root sebelum menjalankan ENTRYPOINT
-USER $USER
+# Entrypoint akan dijalankan sebagai ROOT untuk memulai Tailscale daemon
+USER root
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
