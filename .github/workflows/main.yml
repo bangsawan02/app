@@ -1,93 +1,162 @@
-name: 🖥️ Persistent KDE Plasma + Tailscale (Host Runner)
+name: 🖥️ Persistent Xfce + Tailscale (Host Runner, VNC/noVNC)
 
 on:
-  # Memungkinkan dijalankan secara manual dari UI GitHub
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   setup-gui-runner:
     runs-on: ubuntu-latest
     env:
-      # Variabel Kunci, harus didefinisikan di Secrets/Vars GitHub
       TAILSCALE_AUTHKEY: ${{ vars.AUTHKEY }}
       USERNAME: runner
       PASSWORD: runner
-      TAILSCALE_HOSTNAME: gh-plasma-${{ github.run_id }}
-      CACHE_KEY_VERSION: v1 # Versi kustom untuk cache data
+      TAILSCALE_HOSTNAME: gh-vnc-${{ github.run_id }}
+      VNC_DISPLAY: ":1"
+      VNC_PORT: 5901
+      NOVNC_PORT: 6080
+      CACHE_KEY_VERSION: v2 # Versi Kustom Cache
 
     steps:
       - uses: actions/checkout@v4
 
-      # 1. RESTORE DATA USER
-      - name: ♻️ Restore User Data Cache
-        id: cache-restore
+      # ===============================================
+      # 1. CACHING APT PACKAGES
+      # ===============================================
+      - name: 📦 1. Restore APT Cache (Paket Instalasi)
+        id: cache-apt-restore
         uses: actions/cache@v4
         with:
-          # Direktori yang di-cache: Home Directory User Anda
-          path: /home/${{ env.USERNAME }}
-          # Kunci: OS + Nama Job + Versi Kustom
-          key: ${{ runner.os }}-kde-data-${{ env.CACHE_KEY_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-kde-data-
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }} 
 
-      # 2. KONFIGURASI USER & SUDO
-      - name: Ensure runner user has sudo
+      # 🔥 LANGKAH BARU: Clean up APT Cache Locks 🔥
+      - name: Clean up apt cache
+        if: always()
         run: |
-          # Atur sandi untuk user runner
+          echo "Menghapus lock dan partial files APT..."
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -f /var/lib/apt/lists/lock
+          sudo rm -rf /var/cache/apt/archives/partial
+          sudo rm -rf /var/lib/apt/lists/partial
+          
+      # 🔥 LANGKAH BARU: Grant Permissions to APT cache 🔥
+      # Mengatasi masalah izin yang mungkin muncul setelah restore cache
+      - name: Grant permissions to APT cache
+        if: always()
+        run: |
+          echo "Mengubah kepemilikan APT cache ke user $USERNAME..."
+          sudo chown -R $USER:$USER /var/cache/apt
+          sudo chown -R $USER:$USER /var/lib/apt
+
+      # ===============================================
+      # 2. CACHING USER DATA
+      # ===============================================
+      - name: ♻️ 2. Restore User Data Cache (Home: /home/runner)
+        id: cache-user-restore
+        uses: actions/cache@v4
+        with:
+          path: /home/${{ env.USERNAME }}
+          key: ${{ runner.os }}-xfce-data-${{ env.CACHE_KEY_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-xfce-data-
+
+      # 3. KONFIGURASI USER & SUDO
+      - name: Configure User (Runner)
+        run: |
           echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
-          # Berikan hak NOPASSWD sudo agar instalasi non-interaktif berjalan mulus
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
 
-      # 3. INSTALASI KDE PLASMA + XRDP
-      - name: Install KDE Plasma + xrdp
+      # 4. INSTALASI XFCE, VNC, & NOVNC
+      - name: 💻 Install Xfce, VNC, noVNC, and Setup
         run: |
-          echo ">>> Installing KDE Plasma Desktop..."
-          sudo apt-get update -qq
-          # Instal paket KDE, Xorg, DBUS, dan XRDP
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 xrdp
+          echo ">>> Installing Desktop, VNC, and Dependencies..."
+          sudo apt update -qq
+          sudo apt install -y -qq \
+            xfce4 xfce4-goodies \
+            tigervnc-standalone-server \
+            dbus-x11 \
+            python3-pip git net-tools \
+            > /dev/null 2>&1
+          
+          # Instalasi noVNC
+          sudo git clone https://github.com/novnc/noVNC.git /opt/noVNC
+          sudo git clone https://github.com/novnc/websockify /opt/noVNC/utils/websockify
+          sudo pip3 install websockify
+          
+          # Konfigurasi VNC xstartup
+          echo "Membuat konfigurasi VNC untuk user $USERNAME..."
+          sudo mkdir -p /home/${USERNAME}/.vnc
+          
+          VNC_XSTARTUP='#!/bin/bash
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          startxfce4 &'
+          
+          echo "$VNC_XSTARTUP" | sudo tee /home/${USERNAME}/.vnc/xstartup
+          sudo chmod +x /home/${USERNAME}/.vnc/xstartup
+          
+          # Set VNC password
+          echo "${PASSWORD}" | vncpasswd -f | sudo tee /home/${USERNAME}/.vnc/passwd
+          
+          # Atur kepemilikan
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
+          sudo chmod 600 /home/${USERNAME}/.vnc/passwd
+          
+          # Bersihkan cache apt setelah instalasi selesai
+          sudo apt clean
 
-          # Konfigurasi sesi KDE Plasma untuk XRDP
-          echo "startplasma-x11" | sudo tee /home/${USERNAME}/.xsession
-          echo "exec startplasma-x11" | sudo tee /home/${USERNAME}/.xinitrc
-          # Atur kepemilikan file sesi
-          sudo chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.xsession /home/${USERNAME}/.xinitrc
+      # 5. SAVE APT CACHE
+      - name: 💾 Save APT Cache
+        uses: actions/cache@v4
+        # Hanya simpan jika instalasi paket di langkah 4 berhasil
+        if: success()
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ env.CACHE_KEY_VERSION }}
 
-          # Aktifkan dan mulai ulang layanan xrdp
-          sudo systemctl enable --now xrdp
-          sudo systemctl restart xrdp
-
-      # 4. INSTALASI TAILSCALE
-      - name: Install Tailscale
+      # 6. INSTALASI DAN START TAILSCALE
+      - name: Install and Start Tailscale
         run: |
-          echo ">>> Installing Tailscale..."
-          # Instalasi menggunakan script resmi (metode yang berhasil Anda gunakan)
+          echo ">>> Installing and Starting Tailscale..."
           curl -fsSL https://tailscale.com/install.sh | sudo sh >/dev/null 2>&1
-          # Otorisasi dan sambungkan ke Tailnet
-          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}" --accept-routes --ssh
+          sleep 5
           sudo tailscale ip -4
 
-      # 5. KONEKSI & KEEP ALIVE
+      # 7. START VNC SERVER DAN NOVNC
+      - name: 🚀 Start VNC Server and noVNC
+        run: |
+          echo ">>> Memulai VNC Server dan noVNC..."
+          
+          # Start VNC Server sebagai user runner
+          sudo su - ${USERNAME} -c "/usr/bin/vncserver ${VNC_DISPLAY} -geometry 1280x800 -depth 24"
+          
+          # Start websockify (noVNC) sebagai user runner
+          sudo su - ${USERNAME} -c "/opt/noVNC/utils/websockify/run --web /opt/noVNC ${NOVNC_PORT} localhost:${VNC_PORT} &"
+
+          sleep 5
+          
+      # 8. KONEKSI & KEEP ALIVE
       - name: Connection + Keep Alive
         run: |
           IP_ADDR=$(sudo tailscale ip -4)
-          echo "=== FINAL CONNECTION INFO ==="
-          echo "USERNAME: ${USERNAME}"
-          echo "PASSWORD: ${PASSWORD}"
-          echo "Tailscale IP: ${IP_ADDR}"
-          echo "Connect with any RDP client using the IP above."
-          echo ">>> Keeping runner alive for RDP session (600 seconds interval)."
+          echo "::notice file=README.md,line=1::=== FINAL CONNECTION INFO ==="
+          echo "::notice file=README.md,line=1::Desktop: Xfce4 (VNC/noVNC)"
+          echo "::notice file=README.md,line=1::USERNAME: ${USERNAME}"
+          echo "::notice file=README.md,line=1::PASSWORD: ${PASSWORD}"
+          echo "::notice file=README.md,line=1::Tailscale IP: ${IP_ADDR}"
+          echo "::notice file=README.md,line=1::Akses Web VNC (dari Tailnet Anda): http://${IP_ADDR}:${NOVNC_PORT}/vnc.html"
           
-          # Tahan runner agar tidak selesai. Anda harus membatalkan job ini secara manual.
+          echo ">>> Keeping runner alive for VNC session."
           while true; do sleep 600; done
 
-      # 6. SAVE DATA USER
-      - name: 💾 Save User Data Cache
+      # 9. SAVE USER DATA (Wajib di Akhir, Walau Job Gagal/Dibatalkan)
+      - name: 💾 Save User Data Cache (Wajib)
         uses: actions/cache@v4
-        # Wajib: Gunakan 'always()' agar cache tersimpan saat job dibatalkan (failed)
         if: always()
         with:
           path: /home/${{ env.USERNAME }}
-          key: ${{ runner.os }}-kde-data-${{ env.CACHE_KEY_VERSION }}
+          key: ${{ runner.os }}-xfce-data-${{ env.CACHE_KEY_VERSION }}
